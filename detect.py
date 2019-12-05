@@ -8,8 +8,24 @@ import requests
 # from tts_say import say_sync
 import os
 
+from wechat_bot import send_image, send_text
+from sysinfo import get_mem, get_disk, get_cpu_temp, get_acpi_temp
+
 config_size = 224
 config_alpha = 1
+
+next_send_report = 0
+report_offset = 18* 60 * 60 - 8 * 60 * 60 # 18:00:00
+
+def get_next_time():
+    now = int(time.time())
+    now = int(now / 86400)
+    now += 1
+    now *= 86400
+    now += report_offset
+    return now
+
+next_send_report = 0
 
 def load_model():
     input_layer = Input(shape=(config_size, config_size, 3))
@@ -23,28 +39,6 @@ def load_model():
     model.load_weights('weigth.dump')
     return model
 
-class TimeRange():
-    def __init__(self, time_start, time_end):
-        import math
-        b, a = math.modf(time_start)
-        assert 0 <= a < 23
-        assert 0 <= b < 59
-        self.start_time = time_start
-        b, a = math.modf(time_end)
-        assert 0 <= a < 23
-        assert 0 <= b < 59
-        assert time_start <= time_end
-        self.end_time = time_end
-
-    def __contains__(self, tm):
-        if isinstance(tm, float):
-            return self.start_time <= tm < self.end_time
-        elif isinstance(tm, time.struct_time):
-            t = tm.tm_hour + tm.tm_min/100.0
-            return self.start_time <= t < self.end_time
-        else:
-            raise Exception('type error')
-
 def getVector(img):
     img = img.convert("L")
     img = img.resize((32, 32), Image.ANTIALIAS)
@@ -57,23 +51,30 @@ def se(vec1, vec2):
     return np.sum(np.power(vec1, [2]))
 
 def main():
-    # 早晨设置一次
-    set_flag_time = TimeRange(5.59, 6.00)
-    # 检测区间，只在这段时间的第一次检测到人时才播放简报
-    alert_time = TimeRange(6.10, 10.00)
-    report_flag = False
-    last_img = Image.open(requests.get("http://192.168.1.10/tmpfs/auto.jpg?usr=admin&pwd=admin", stream=True).raw)
+    global next_send_report
+    last_img = Image.open(requests.get("http://192.168.18.251/tmpfs/auto.jpg?usr=admin&pwd=admin", stream=True).raw)
     last_img = getVector(last_img)
     i = 0
     model = load_model()
     while True:
-        tm = time.localtime()
-        if tm in set_flag_time:
-            print('Set Flag')
-            report_flag = True
-        picture = Image.open(requests.get("http://192.168.1.10/tmpfs/auto.jpg?usr=admin&pwd=admin", stream=True).raw)
+        picture = Image.open(requests.get("http://192.168.18.251/tmpfs/auto.jpg?usr=admin&pwd=admin", stream=True).raw)
         current_img = getVector(picture)
-        if se(last_img, current_img) < 1.0:
+
+        if time.time() > next_send_report:
+            next_send_report = get_next_time()
+            print('next send time %d' % next_send_report)
+            send_image(picture)
+            info = ''
+            info += get_mem()
+            info += '\n'
+            info += get_disk()
+            info += '\n'
+            info += get_cpu_temp()
+            info += '\n'
+            info += get_acpi_temp()
+            send_text(info)
+
+        if se(last_img, current_img) < 3.0:
             time.sleep(1)
             continue
         last_img = current_img
@@ -87,13 +88,11 @@ def main():
         pred = model.predict(img_new)
         end_time = time.time()
         # print("%.2f" % (end_time - start_time), end='s ')
-        # print('猫:%.2f 狗:%.2f 人:%.2f.jpg' % (pred[0, 0], pred[0, 1], pred[0, 2]))
+        # print('cat:%.2f dog:%.2f human:%.2f' % (pred[0, 0], pred[0, 1], pred[0, 2]))
         if pred[0, 2] > 0.25:
-            # img.save('./images/%02d 猫:%.2f 狗:%.2f 人:%.2f.jpg' % (i, pred[0, 0], pred[0, 1], pred[0, 2]))
-            # say_sync('你好！')
-            if report_flag and (tm in alert_time):
-                report_flag = False
-                os.system("python3 brief_report.py")
+            send_image(picture)
+            send_text('cat:%.2f dog:%.2f human:%.2f' % (pred[0, 0], pred[0, 1], pred[0, 2]))
+            time.sleep(10)
 
         time.sleep(1)
 
